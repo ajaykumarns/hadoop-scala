@@ -7,15 +7,17 @@
  */
 package com.anadathur
 
-import org.apache.hadoop.mapreduce.{Reducer, Mapper, Job}
+import org.apache.hadoop.mapreduce.{OutputFormat, Reducer, Mapper, Job}
 import java.lang.reflect.ParameterizedType
 import org.apache.hadoop.io.{LongWritable, FloatWritable, IntWritable}
 import java.lang
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat
 import org.apache.hadoop.fs.Path
-import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat
+import org.apache.hadoop.mapreduce.lib.output.{SequenceFileOutputFormat, FileOutputFormat}
 import org.apache.hadoop.conf.{Configuration, Configurable}
 import org.apache.hadoop.util.{ToolRunner, Tool}
+import org.apache.hadoop.io.compress.{SnappyCodec, CompressionCodec}
+import org.apache.hadoop.io.SequenceFile.CompressionType
 
 
 package object hadoop{
@@ -67,6 +69,113 @@ package object hadoop{
   implicit def strToText(s: String): Text = new Text(s)
   implicit def txtToStr(t: Text) = t.toString
   implicit def charToText(s: Char): Text = new Text(s.toString)
+  implicit def enrichedJob(j: Job) = new EnrichedJob(j)
+  implicit def strToPath(s: String) = new Path(s)
+
+
+
+  class EnrichedJob(job: Job){
+
+    private[this] def setKeyValueTypes(){
+      def types(x: Class[_]) = {
+        val args = x.getGenericSuperclass.asInstanceOf[ParameterizedType].getActualTypeArguments
+        (args(2).asInstanceOf[Class[_]], args(3).asInstanceOf[Class[_]])
+      }
+
+      require(job.getMapperClass != null, "Mapper class cannot be null.")
+      //both mapper & reducer present,
+      if (job.getReducerClass != null && job.getMapperClass != null){
+        val result = types(job.getReducerClass)
+        val m = types(job.getMapperClass)
+        this.withMapOutputType(result._1, result._2)
+            .withOutputType(m._1, m._2)
+      } else if(job.getMapperClass != null && job.getReducerClass == null){
+        //reducer may be absent
+        val result = types(job.getMapperClass)
+        this.withOutputType(result._1, result._2)
+      }
+    }
+
+    def withMapOutputType(keyType: Class[_], valueType: Class[_]) = {
+      require(keyType != null); require(valueType != null)
+      job.setMapOutputKeyClass(keyType)
+      job.setMapOutputValueClass(valueType)
+      this
+    }
+
+    def withOutputType(keyType: Class[_], valueType: Class[_]) = {
+      require(keyType != null); require(valueType != null)
+      job.setOutputKeyClass(keyType)
+      job.setOutputValueClass(valueType)
+      this
+    }
+
+    def withInputPaths(paths: Path*) = {
+      for (p <- paths){
+        require(p != null)
+        FileInputFormat.addInputPath(job, p)
+      }
+      this
+    }
+
+    def withOutputPath(path: Path) = {
+      require(path != null)
+      FileOutputFormat.setOutputPath(job, path)
+      this
+    }
+
+    def withMapperReducer(mapper: Class[_ <: Mapper[_,_, _, _]], reducer: Class[_ <: Reducer[_, _, _,_]]) = {
+      require(mapper != null); require(reducer != null)
+      job.setMapperClass(mapper)
+      job.setReducerClass(reducer)
+      this
+    }
+
+    def withOnlyMapper(mapper: Class[_ <: Mapper[_,_, _, _]]) = {
+      require(mapper != null)
+      job.setMapperClass(mapper)
+      job.setNumReduceTasks(0)
+      this
+    }
+
+    def deduceInputOutputTypes() = {
+      setKeyValueTypes()
+      this
+    }
+
+    def withMainClass(clazz: Class[_]) = {
+      job.setJarByClass(clazz)
+      this
+    }
+
+    def enableCompression() = {
+      FileOutputFormat.setCompressOutput(job, true)
+      this
+    }
+
+    def withInputFormat(clazz: Class[_ <: org.apache.hadoop.mapreduce.InputFormat[_,_]]) = {
+      job.setInputFormatClass(clazz)
+      this
+    }
+
+    def withOutputFormat(clazz: Class[_ <: OutputFormat[_, _]]) = {
+      job.setOutputFormatClass(clazz)
+      this
+    }
+
+    def withCompressor(compressor: Class[_ <: CompressionCodec]) = {
+      FileOutputFormat.setOutputCompressorClass(job, compressor)
+      this
+    }
+
+    def withCompressionType(ctype: CompressionType) = {
+      SequenceFileOutputFormat.setOutputCompressionType(job, ctype)
+      this
+    }
+
+  }
+
+
 
   trait Configured extends Configurable{
     private[this] var conf: Configuration = _
@@ -139,7 +248,7 @@ package object hadoop{
     extends Configured with App with Tool{
 
     def process(job: Job){
-      setKeyValueTypes(job)
+      job.deduceInputOutputTypes()
     }
 
     final override def run(args: Array[String]): Int = {
@@ -149,9 +258,10 @@ package object hadoop{
       }
 
       val job = new Job(getConf)
-      FileInputFormat.setInputPaths(job, new Path(args(0)))
-      FileOutputFormat.setOutputPath(job, new Path(args(1)))
-      job.setJarByClass(getClass)
+      job.withInputPaths(args(0))
+        .withOutputPath(args(1))
+        .withMainClass(getClass)
+
       job.setJobName("Map reduce written using scala for: %s".format(getClass.getSimpleName))
       if(mapper != null)
         job.setMapperClass(mapper)

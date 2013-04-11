@@ -24,11 +24,10 @@ class ImgCounterMapper extends SimpleMapper[HLong, Text, Text, HInt]{
   }
 }
 
-object Counter extends SimpleJobDriver(classOf[ImgCounterMapper], null){
+object Counter extends SimpleJobDriver{
   override def process(job: Job) {
-    job.setOutputKeyClass(classOf[Text])
-    job.setOutputValueClass(classOf[HInt])
-    job.setNumReduceTasks(0)
+    job.withOnlyMapper(classOf[ImgCounterMapper])
+      .deduceInputOutputTypes()
   }
 }
 
@@ -38,23 +37,21 @@ class SequenceFileMapper extends SimpleMapper[HLong, Text, HLong, Text]{
   }
 }
 
-object UncompressedSeqFile extends SimpleJobDriver(classOf[SequenceFileMapper], null){
+object UncompressedSeqFile extends SimpleJobDriver{
   override def process(job: Job){
-    job.setOutputKeyClass(classOf[HLong])
-    job.setOutputValueClass(classOf[Text])
-    job.setNumReduceTasks(0)
-    FileOutputFormat.setCompressOutput(job, true)
-    FileOutputFormat.setOutputCompressorClass(job, classOf[SnappyCodec])
-    SequenceFileOutputFormat.setOutputCompressionType(job, CompressionType.BLOCK)
-    job.setOutputFormatClass(classOf[SequenceFileOutputFormat[_,_]])
+    job.withOnlyMapper(classOf[SequenceFileMapper])
+      .deduceInputOutputTypes()
+      .enableCompression()
+      .withOutputFormat(classOf[SequenceFileOutputFormat[_,_]])
+      .withCompressionType(CompressionType.BLOCK)
+      .withCompressor(classOf[SnappyCodec])
   }
 }
 
 object CompressedFileReader extends SimpleJobDriver(classOf[SequenceFileMapper], null){
   override def process(job: Job) {
-    job.setOutputKeyClass(classOf[HLong])
-    job.setOutputValueClass(classOf[Text])
-    job.setNumReduceTasks(0)
-    job.setInputFormatClass(classOf[SequenceFileInputFormat[_,_]])
+    job.withOnlyMapper(classOf[SequenceFileMapper])
+      .deduceInputOutputTypes()
+      .withInputFormat(classOf[SequenceFileInputFormat[_,_]])
   }
 }
